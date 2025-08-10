@@ -82,7 +82,7 @@ class Resume(BaseModel):
     achievements: List[str]
     certifications: List[Certification]
 
-from chatbot import (
+from BE.main import (
     get_embedding, milvus_client, COLLECTION_NAME, DIM,
     initialize_milvus_collection, logger
 )
