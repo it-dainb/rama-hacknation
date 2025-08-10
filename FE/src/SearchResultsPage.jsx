@@ -8,53 +8,47 @@
  * 2. Refine their search criteria (right side)
  * 3. See AI-extracted search requirements
  * 
- * API ENDPOINTS NEEDED:
+ * INTEGRATED API ENDPOINTS:
  * 
- * 1. POST /api/search/natural
- *    - Purpose: Initial search when arriving from home with natural language query
- *    - Location: Line 134 (performInitialSearch function)
- *    - Request: { query: string, sessionId: string }
- *    - Response: { candidates: [...], extractedCriteria: {...} }
- * 
- * 2. GET /api/search/job/{jobId}
+ * 1. GET /get_candidates?jd_id={jobId}
  *    - Purpose: Get candidates for specific job posting
- *    - Location: Line 134 (performInitialSearch function)
- *    - Response: { candidates: [...], extractedCriteria: {...} }
+ *    - Location: Line 140 (performInitialSearch function)
+ *    - Response: { candidates: [...], common_aspects: [...] }
  * 
- * 3. POST /api/search/refine
- *    - Purpose: Update search with refined criteria
- *    - Location: Line 196 (handleSearchRefinement function)
- *    - Request: { query: string, previousQuery: string, sessionId: string }
- *    - Response: { candidates: [...], extractedCriteria: {...} }
+ * 2. POST /chat
+ *    - Purpose: Refine search with natural language query
+ *    - Location: Line 208 (handleSearchRefinement function)
+ *    - Request: { query: string, job_id: UUID }
+ *    - Response: { analysis, recommendations, key_insights, aspect_weights, top_candidates, ... }
+ * 
+ * 3. GET /get_jobs
+ *    - Purpose: Get all available job listings
+ *    - Used for job selection/validation
  * 
  * RESPONSE FORMATS:
  * 
- * candidates: [{
- *   id: number,
+ * Candidate format from /get_candidates:
+ * {
  *   name: string,
- *   role: string,
- *   experience: number (years),
- *   skills: string[],
- *   category: 'Great' | 'Good' | 'Decent' | 'Poor',
- *   matchReason: string (AI-generated explanation),
- *   salary: string,
- *   location: string,
- *   education: string
- * }]
- * 
- * extractedCriteria: {
- *   experience: string,
- *   education: string,
- *   expertise: string,
- *   skills: string,
- *   traits: string,
- *   other: string
+ *   title: string,
+ *   metric: {
+ *     metric_id: UUID,
+ *     job_id: UUID,
+ *     // additional metric data
+ *   }
  * }
  * 
- * ADDITIONAL ENDPOINTS TO IMPLEMENT:
- * - GET /api/candidate/{id} - Full candidate profile (on click)
- * - POST /api/candidate/{id}/save - Save to recruiter's pool
- * - POST /api/candidate/{id}/message - Contact candidate
+ * Chat response format from /chat:
+ * {
+ *   analysis: string,
+ *   recommendations: string,
+ *   key_insights: string,
+ *   aspect_weights: { [aspect: string]: number },
+ *   reasoning: string,
+ *   top_candidates: Array<candidate_data>,
+ *   query_processed: string,
+ *   job_title: string
+ * }
  * ============================================
  */
 
@@ -64,7 +58,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   Search, User, Briefcase, MapPin, DollarSign, 
   GraduationCap, Award, Clock, Brain, Building, 
-  RefreshCw, Edit2, CheckCircle
+  RefreshCw, Edit2, CheckCircle, AlertCircle
 } from 'lucide-react';
 
 const SearchResultsPage = () => {
@@ -73,7 +67,6 @@ const SearchResultsPage = () => {
   // ============================================
   const location = useLocation();
   const navigate = useNavigate();
-  
   
   // Get data passed from home page
   const { query, jobId, jobTitle, searchType, initialResults } = location.state || {};
@@ -84,158 +77,170 @@ const SearchResultsPage = () => {
   
   // Search queries
   const [currentQuery, setCurrentQuery] = useState(
-    query || jobTitle || 'Looking for a senior ML engineer with 5+ years experience in production systems'
+    query || jobTitle || 'Looking for the best candidates for this role'
   );
   const [refinedQuery, setRefinedQuery] = useState('');
   
   // Results and loading states
-  const [candidates, setCandidates] = useState(
-    initialResults || [
-      {
-        id: 1,
-        name: 'Sarah Chen',
-        role: 'Senior ML Engineer',
-        experience: 5,
-        skills: ['PyTorch', 'TensorFlow', 'Kubernetes'],
-        category: 'Great',
-        matchReason: 'Deep expertise in requested frameworks, 5+ years production ML, 2 publications',
-        location: 'San Francisco, CA',
-        education: 'MS Computer Science, Stanford',
-        companies_worked: 3,
-        publications: 2,
-        certifications: ['Certified TensorFlow Developer', 'AWS ML Specialty']
-      },
-      {
-        id: 2,
-        name: 'Marcus Johnson',
-        role: 'AI Research Engineer',
-        experience: 3,
-        skills: ['Python', 'Transformers', 'JAX'],
-        category: 'Good',
-        matchReason: 'Strong research background with 4 papers, limited production experience',
-        location: 'Remote',
-        education: 'PhD AI/ML, MIT',
-        companies_worked: 2,
-        publications: 4,
-        metrics_achieved: '30% model accuracy improvement'
-      },
-      {
-        id: 3,
-        name: 'Priya Patel',
-        role: 'ML Engineer',
-        experience: 2,
-        skills: ['Scikit-learn', 'Python', 'AWS'],
-        category: 'Decent',
-        matchReason: 'Solid fundamentals, AWS certified, would need mentorship for senior role',
-        location: 'Austin, TX',
-        education: 'BS Computer Science, UT Austin',
-        companies_worked: 1,
-        certifications: ['AWS Certified ML']
-      }
-    ]
-  );
-  
+  const [candidates, setCandidates] = useState(initialResults || []);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   
-  // Extracted search criteria (would come from AI parsing the natural language)
+  // Chat analysis results
+  const [analysisResult, setAnalysisResult] = useState(null);
+  
+  // Extracted search criteria (from aspect weights)
   const [searchCriteria, setSearchCriteria] = useState({
-    experience: '5+ years',
-    education: 'Bachelor\'s or higher in CS/related field',
-    expertise: 'Production ML systems, Deep learning frameworks',
-    skills: 'Python, TensorFlow/PyTorch, MLOps',
-    traits: 'Leadership experience, Strong communication',
-    other: 'Startup experience preferred'
+    experience: 'Relevant experience required',
+    education: 'Appropriate educational background',
+    expertise: 'Domain-specific expertise',
+    skills: 'Required technical skills',
+    traits: 'Desired soft skills and traits',
+    other: 'Additional requirements'
   });
 
   // ============================================
+  // API CONFIGURATION
+  // ============================================
+  const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+  
+  // ============================================
+  // UTILITY FUNCTIONS
+  // ============================================
+  
+  const transformBackendCandidate = (backendCandidate) => {
+    // Transform backend candidate format to frontend format
+    return {
+      id: backendCandidate.metric?.metric_id || Math.random().toString(36).substr(2, 9),
+      name: backendCandidate.name || 'Unknown Candidate',
+      role: backendCandidate.title || 'Unknown Role',
+      experience: backendCandidate.experience || 0,
+      skills: backendCandidate.skills || [],
+      category: categorizeCandidateMatch(backendCandidate),
+      matchReason: backendCandidate.match_reason || 'Candidate matches job requirements',
+      location: backendCandidate.location || 'Location not specified',
+      education: backendCandidate.education || 'Education not specified',
+      salary: backendCandidate.salary || 'Salary not specified',
+      companies_worked: backendCandidate.companies_worked || 0,
+      publications: backendCandidate.publications || 0,
+      certifications: backendCandidate.certifications || [],
+      metrics_achieved: backendCandidate.metrics_achieved || null,
+      score: backendCandidate.score || backendCandidate.overall_score || 0
+    };
+  };
+  
+  const categorizeCandidateMatch = (candidate) => {
+    const score = candidate.score || candidate.overall_score || 0;
+    if (score >= 0.8) return 'Great';
+    if (score >= 0.6) return 'Good';  
+    if (score >= 0.4) return 'Decent';
+    return 'Poor';
+  };
+  
+  const updateCriteriaFromAspectWeights = (aspectWeights) => {
+    if (!aspectWeights || Object.keys(aspectWeights).length === 0) return;
+    
+    // Convert aspect weights to readable criteria
+    const sortedAspects = Object.entries(aspectWeights)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 6); // Top 6 most important aspects
+    
+    const criteriaMap = {
+      experience: sortedAspects.filter(([key]) => 
+        key.toLowerCase().includes('experience') || 
+        key.toLowerCase().includes('years') ||
+        key.toLowerCase().includes('seniority')
+      ).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Experience as specified',
+      
+      education: sortedAspects.filter(([key]) => 
+        key.toLowerCase().includes('education') || 
+        key.toLowerCase().includes('degree') ||
+        key.toLowerCase().includes('qualification')
+      ).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Educational requirements',
+      
+      expertise: sortedAspects.filter(([key]) => 
+        key.toLowerCase().includes('expertise') || 
+        key.toLowerCase().includes('domain') ||
+        key.toLowerCase().includes('specialization')
+      ).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Domain expertise',
+      
+      skills: sortedAspects.filter(([key]) => 
+        key.toLowerCase().includes('skill') || 
+        key.toLowerCase().includes('technology') ||
+        key.toLowerCase().includes('programming')
+      ).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Technical skills',
+      
+      traits: sortedAspects.filter(([key]) => 
+        key.toLowerCase().includes('communication') || 
+        key.toLowerCase().includes('leadership') ||
+        key.toLowerCase().includes('collaboration')
+      ).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Soft skills and traits',
+      
+      other: sortedAspects.filter(([key]) => 
+        !key.toLowerCase().includes('experience') &&
+        !key.toLowerCase().includes('education') &&
+        !key.toLowerCase().includes('skill') &&
+        !key.toLowerCase().includes('communication') &&
+        !key.toLowerCase().includes('leadership')
+      ).slice(0, 3).map(([key, weight]) => `${key} (${Math.round(weight * 100)}% importance)`).join(', ') || 'Additional requirements'
+    };
+    
+    setSearchCriteria(criteriaMap);
+  };
+
+  // ============================================
   // SEARCH REFINEMENT HANDLER
-  // Backend API: POST /api/search/refine
+  // Backend API: POST /chat
   // ============================================
   const handleSearchRefinement = async () => {
     if (!refinedQuery.trim() || refinedQuery === currentQuery) return;
+    if (!jobId) {
+      setError('No job ID available for search refinement');
+      return;
+    }
     
     setIsLoading(true);
+    setError(null);
     
     try {
-      // ===== BACKEND TEAM: IMPLEMENT THIS API CALL =====
-      // const response = await fetch('/api/search/refine', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ 
-      //     query: refinedQuery,
-      //     previousQuery: currentQuery,
-      //     sessionId: 'unique-session-id' // Track search sessions
-      //   })
-      // });
-      // 
-      // const data = await response.json();
-      // setCandidates(data.candidates);
-      // setSearchCriteria(data.extractedCriteria); // AI-parsed criteria
-      // setCurrentQuery(refinedQuery); // Update current query after successful search
+      const response = await fetch(`${API_BASE_URL}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          query: refinedQuery,
+          job_id: jobId
+        })
+      });
       
-      // MOCK: Simulate API delay and response
-      setTimeout(() => {
-        // Update the current query
-        setCurrentQuery(refinedQuery);
-        
-        // Mock: Add a new candidate to show the search updated
-        setCandidates([
-          {
-            id: 4,
-            name: 'Alex Kim',
-            role: 'ML Platform Lead',
-            experience: 6,
-            skills: ['MLOps', 'Kubernetes', 'Python'],
-            category: 'Great',
-            matchReason: 'Matches revised criteria with platform expertise',
-            salary: '$190k-230k',
-            location: 'Seattle, WA',
-            education: 'MS Machine Learning, Carnegie Mellon'
-          },
-          {
-            id: 1,
-            name: 'Sarah Chen',
-            role: 'Senior ML Engineer',
-            experience: 5,
-            skills: ['PyTorch', 'TensorFlow', 'Kubernetes'],
-            category: 'Great',
-            matchReason: 'Deep expertise in requested frameworks, 5+ years production ML',
-            salary: '$180k-220k',
-            location: 'San Francisco, CA',
-            education: 'MS Computer Science, Stanford'
-          },
-          {
-            id: 2,
-            name: 'Marcus Johnson',
-            role: 'AI Research Engineer',
-            experience: 3,
-            skills: ['Python', 'Transformers', 'JAX'],
-            category: 'Good',
-            matchReason: 'Strong research background, limited production experience',
-            salary: '$150k-180k',
-            location: 'Remote',
-            education: 'PhD AI/ML, MIT'
-          }
-        ]);
-        
-        // Mock: Update extracted criteria based on refined search
-        setSearchCriteria({
-          experience: '5-7 years',
-          education: 'Master\'s preferred',
-          expertise: 'MLOps, Platform engineering',
-          skills: 'Kubernetes, Docker, CI/CD',
-          traits: 'Team leadership, Architecture design',
-          other: 'Scale experience with ML systems'
-        });
-        
-        // Clear the refined query input after successful search
-        setRefinedQuery('');
-        setIsLoading(false);
-      }, 1000);
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Update analysis result
+      setAnalysisResult(data);
+      
+      // Transform and update candidates from top_candidates
+      if (data.top_candidates && Array.isArray(data.top_candidates)) {
+        const transformedCandidates = data.top_candidates.map(transformBackendCandidate);
+        setCandidates(transformedCandidates);
+      }
+      
+      // Update search criteria from aspect weights
+      if (data.aspect_weights) {
+        updateCriteriaFromAspectWeights(data.aspect_weights);
+      }
+      
+      // Update current query after successful search
+      setCurrentQuery(refinedQuery);
+      setRefinedQuery('');
       
     } catch (error) {
       console.error('Search refinement failed:', error);
+      setError(`Failed to refine search: ${error.message}`);
+    } finally {
       setIsLoading(false);
     }
   };
@@ -247,129 +252,61 @@ const SearchResultsPage = () => {
 
   // ============================================
   // INITIAL SEARCH ON PAGE LOAD
-  // Trigger search when arriving from HomePage
+  // Backend API: GET /get_candidates?jd_id={jobId}
   // ============================================
   useEffect(() => {
-    // If we have a query but no results, perform initial search
-    if ((query || jobId) && (!initialResults || initialResults.length === 0)) {
+    // If we have a jobId but no results, perform initial search
+    if (jobId && (!initialResults || initialResults.length === 0)) {
       performInitialSearch();
     }
-  }, []);
+  }, [jobId]);
 
   const performInitialSearch = async () => {
+    if (!jobId) {
+      setError('No job ID provided for candidate search');
+      return;
+    }
+    
     setIsLoading(true);
+    setError(null);
     
     try {
-      // ===== BACKEND TEAM: IMPLEMENT THIS API CALL =====
-      // const endpoint = searchType === 'job' 
-      //   ? `/api/search/job/${jobId}`
-      //   : '/api/search/natural';
-      //
-      // const response = await fetch(endpoint, {
-      //   method: searchType === 'job' ? 'GET' : 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: searchType === 'natural' 
-      //     ? JSON.stringify({ query: query })
-      //     : undefined
-      // });
-      //
-      // const data = await response.json();
-      // setCandidates(data.candidates);
-      // setSearchCriteria(data.extractedCriteria);
+      const response = await fetch(`${API_BASE_URL}/get_candidates?jd_id=${jobId}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
       
-      // MOCK: Simulate initial API call
-      setTimeout(() => {
-        // Mock candidates based on search type
-        const mockCandidates = searchType === 'job' ? [
-          {
-            id: 1,
-            name: 'Alex Rodriguez',
-            role: 'ML Platform Engineer',
-            experience: 4,
-            skills: ['Docker', 'Kubernetes', 'TensorFlow'],
-            category: 'Great',
-            matchReason: 'Perfect match for infrastructure role, strong MLOps background',
-            location: 'San Francisco, CA',
-            education: 'MS Computer Science',
-            companies_worked: 2,
-            certifications: 1
-          },
-          {
-            id: 2,
-            name: 'Emily Watson',
-            role: 'Senior Data Scientist',
-            experience: 6,
-            skills: ['Python', 'SQL', 'Spark'],
-            category: 'Good',
-            matchReason: 'Strong data engineering skills, transitioning to ML engineering',
-            location: 'Seattle, WA',
-            education: 'PhD Statistics',
-            companies_worked: 3,
-            certifications: 2
-          }
-        ] : [
-          {
-            id: 1,
-            name: 'Sarah Chen',
-            role: 'Senior ML Engineer',
-            experience: 5,
-            skills: ['PyTorch', 'TensorFlow', 'Kubernetes'],
-            category: 'Great',
-            matchReason: 'Deep expertise in requested frameworks, 5+ years production ML, published 2 papers',
-            location: 'San Francisco, CA',
-            education: 'MS Computer Science, Stanford',
-            companies_worked: 3,
-            publications: 2
-          },
-          {
-            id: 2,
-            name: 'Marcus Johnson',
-            role: 'AI Research Engineer',
-            experience: 3,
-            skills: ['Python', 'Transformers', 'JAX'],
-            category: 'Good',
-            matchReason: 'Strong research background, limited production experience',
-            location: 'Remote',
-            education: 'PhD AI/ML, MIT',
-            companies_worked: 2,
-            publications: 4
-          },
-          {
-            id: 3,
-            name: 'Priya Patel',
-            role: 'ML Engineer',
-            experience: 2,
-            skills: ['Scikit-learn', 'Python', 'AWS'],
-            category: 'Decent',
-            matchReason: 'Solid fundamentals, would need mentorship for senior role',
-            location: 'Austin, TX',
-            education: 'BS Computer Science, UT Austin',
-            companies_worked: 1,
-            certifications: 1
-          },
-          {
-            id: 4,
-            name: 'David Kim',
-            role: 'ML Research Scientist',
-            experience: 4,
-            skills: ['TensorFlow', 'PyTorch', 'Research'],
-            category: 'Great',
-            matchReason: 'Strong publication record (5 papers), matches your research needs',
-            location: 'Boston, MA',
-            education: 'PhD Machine Learning, CMU',
-            companies_worked: 2,
-            publications: 5
-          }
-        ];
-        
-        setCandidates(mockCandidates);
-        setIsLoading(false);
-      }, 1000);
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Transform backend candidates to frontend format
+      if (data.candidates && Array.isArray(data.candidates)) {
+        const transformedCandidates = data.candidates.map(transformBackendCandidate);
+        setCandidates(transformedCandidates);
+      } else if (Array.isArray(data)) {
+        // Handle case where data is directly an array of candidates
+        const transformedCandidates = data.map(transformBackendCandidate);
+        setCandidates(transformedCandidates);
+      } else {
+        console.warn('Unexpected candidates data format:', data);
+        setCandidates([]);
+      }
+      
+      // If we have common_aspects, we could use them for initial criteria
+      if (data.common_aspects) {
+        // Could create initial criteria from common aspects
+        console.log('Common aspects available:', data.common_aspects);
+      }
       
     } catch (error) {
       console.error('Initial search failed:', error);
+      setError(`Failed to load candidates: ${error.message}`);
+      setCandidates([]);
+    } finally {
       setIsLoading(false);
-      // Could show an error message to user here
     }
   };
 
@@ -377,13 +314,19 @@ const SearchResultsPage = () => {
   // UTILITY FUNCTIONS
   // ============================================
   const getCategoryColor = (category) => {
-    switch(category.toLowerCase()) {
+    switch(category?.toLowerCase()) {
       case 'great': return 'bg-green-100 text-green-700 border-green-300';
       case 'good': return 'bg-blue-100 text-blue-700 border-blue-300';
       case 'decent': return 'bg-yellow-100 text-yellow-700 border-yellow-300';
       case 'poor': return 'bg-red-100 text-red-700 border-red-300';
       default: return 'bg-gray-100 text-gray-700 border-gray-300';
     }
+  };
+
+  const formatSkills = (skills) => {
+    if (Array.isArray(skills)) return skills;
+    if (typeof skills === 'string') return skills.split(',').map(s => s.trim());
+    return [];
   };
 
   return (
@@ -422,6 +365,20 @@ const SearchResultsPage = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Error Display */}
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center">
+            <AlertCircle className="h-5 w-5 text-red-600 mr-2" />
+            <span className="text-red-700">{error}</span>
+            <button 
+              onClick={() => setError(null)}
+              className="ml-auto text-red-600 hover:text-red-800"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         <div className="flex gap-6">
           {/* ============================================
               LEFT COLUMN: CANDIDATE LIST
@@ -441,79 +398,96 @@ const SearchResultsPage = () => {
             
             {/* Candidate Cards */}
             <div className="space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
-              {candidates.map((candidate) => (
-                <div
-                  key={candidate.id}
-                  onClick={() => navigate(`/candidate/${candidate.id}`)}
-                  className={`relative p-4 bg-white rounded-lg border-2 transition-all hover:shadow-md cursor-pointer ${
-                    selectedCandidate?.id === candidate.id 
-                      ? 'border-indigo-500 shadow-md' 
-                      : 'border-gray-200'
-                  }`}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center space-x-3">
-                      <div className="h-10 w-10 bg-gradient-to-br from-gray-300 to-gray-400 rounded-full flex items-center justify-center">
-                        <span className="text-white font-semibold text-sm">
-                          {candidate.name.split(' ').map(n => n[0]).join('')}
-                        </span>
+              {candidates.length === 0 && !isLoading ? (
+                <div className="text-center py-8 text-gray-500">
+                  <User className="h-12 w-12 mx-auto mb-2 text-gray-300" />
+                  <p>No candidates found</p>
+                  <p className="text-sm">Try refining your search criteria</p>
+                </div>
+              ) : (
+                candidates.map((candidate) => (
+                  <div
+                    key={candidate.id}
+                    onClick={() => navigate(`/candidate/${candidate.id}`)}
+                    className={`relative p-4 bg-white rounded-lg border-2 transition-all hover:shadow-md cursor-pointer ${
+                      selectedCandidate?.id === candidate.id 
+                        ? 'border-indigo-500 shadow-md' 
+                        : 'border-gray-200'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center space-x-3">
+                        <div className="h-10 w-10 bg-gradient-to-br from-gray-300 to-gray-400 rounded-full flex items-center justify-center">
+                          <span className="text-white font-semibold text-sm">
+                            {candidate.name.split(' ').map(n => n[0]).join('')}
+                          </span>
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900">{candidate.name}</h3>
+                          <p className="text-sm text-gray-600">{candidate.role}</p>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="font-semibold text-gray-900">{candidate.name}</h3>
-                        <p className="text-sm text-gray-600">{candidate.role}</p>
+                      <div className="flex flex-col items-end">
+                        <span className={`px-2 py-1 text-xs font-semibold rounded-full border ${getCategoryColor(candidate.category)}`}>
+                          {candidate.category}
+                        </span>
+                        {candidate.score && (
+                          <span className="text-xs text-gray-500 mt-1">
+                            Score: {Math.round(candidate.score * 100)}%
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <span className={`px-2 py-1 text-xs font-semibold rounded-full border ${getCategoryColor(candidate.category)}`}>
-                      {candidate.category}
-                    </span>
-                  </div>
-                  
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    {candidate.skills.slice(0, 3).map((skill, idx) => (
-                      <span key={idx} className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded">
-                        {skill}
-                      </span>
-                    ))}
-                    {candidate.skills.length > 3 && (
-                      <span className="px-2 py-0.5 text-gray-500 text-xs">
-                        +{candidate.skills.length - 3} more
-                      </span>
-                    )}
-                  </div>
-                  
-                  <div className="flex items-center space-x-3 text-xs text-gray-500 mb-3">
-                    <span className="flex items-center">
-                      <Briefcase className="h-3 w-3 mr-1" />
-                      {candidate.experience} yrs
-                    </span>
-                    <span className="flex items-center">
-                      <MapPin className="h-3 w-3 mr-1" />
-                      {candidate.location}
-                    </span>
-                    {candidate.publications && (
+                    
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {formatSkills(candidate.skills).slice(0, 3).map((skill, idx) => (
+                        <span key={idx} className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded">
+                          {skill}
+                        </span>
+                      ))}
+                      {formatSkills(candidate.skills).length > 3 && (
+                        <span className="px-2 py-0.5 text-gray-500 text-xs">
+                          +{formatSkills(candidate.skills).length - 3} more
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div className="flex items-center space-x-3 text-xs text-gray-500 mb-3">
+                      {candidate.experience > 0 && (
+                        <span className="flex items-center">
+                          <Briefcase className="h-3 w-3 mr-1" />
+                          {candidate.experience} yrs
+                        </span>
+                      )}
                       <span className="flex items-center">
-                        <Award className="h-3 w-3 mr-1" />
-                        {candidate.publications} papers
+                        <MapPin className="h-3 w-3 mr-1" />
+                        {candidate.location}
                       </span>
-                    )}
+                      {candidate.publications > 0 && (
+                        <span className="flex items-center">
+                          <Award className="h-3 w-3 mr-1" />
+                          {candidate.publications} papers
+                        </span>
+                      )}
+                    </div>
+                    
+                    <p className="text-xs text-gray-600 line-clamp-2 mb-3">
+                      {candidate.matchReason}
+                    </p>
+                    
+                    {/* See More Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/candidate/${candidate.id}`);
+                      }}
+                      className="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+                    >
+                      See more →
+                    </button>
                   </div>
-                  
-                  <p className="text-xs text-gray-600 line-clamp-2 mb-3">
-                    {candidate.matchReason}
-                  </p>
-                  
-                  {/* See More Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigate(`/candidate/${candidate.id}`);
-                    }}
-                    className="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
-                  >
-                    See more →
-                  </button>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 
@@ -531,6 +505,9 @@ const SearchResultsPage = () => {
               </div>
               <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
                 <p className="text-sm text-gray-700 italic">"{currentQuery}"</p>
+                {jobTitle && (
+                  <p className="text-xs text-gray-600 mt-1">Job: {jobTitle}</p>
+                )}
               </div>
             </div>
 
@@ -547,34 +524,67 @@ const SearchResultsPage = () => {
                 <textarea
                   value={refinedQuery}
                   onChange={(e) => setRefinedQuery(e.target.value)}
-                  placeholder="Modify your search criteria..."
+                  placeholder="Ask about the candidates or modify search criteria..."
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
                   rows="3"
                 />
                 <div className="flex justify-between items-center">
                   <p className="text-xs text-gray-500">
-                    Tip: Add specifics like "must have AWS experience" or "prefers remote work"
+                    Example: "Show me candidates with cloud experience" or "Who has the most publications?"
                   </p>
                   <button
                     onClick={handleSearchRefinement}
-                    disabled={isLoading || !refinedQuery.trim() || refinedQuery === currentQuery}
+                    disabled={isLoading || !refinedQuery.trim() || refinedQuery === currentQuery || !jobId}
                     className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                      isLoading || !refinedQuery.trim() || refinedQuery === currentQuery
+                      isLoading || !refinedQuery.trim() || refinedQuery === currentQuery || !jobId
                         ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                         : 'bg-indigo-600 text-white hover:bg-indigo-700'
                     }`}
                   >
-                    {isLoading ? 'Searching...' : 'Update Search'}
+                    {isLoading ? 'Analyzing...' : 'Refine Search'}
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* 3. EXTRACTED CRITERIA */}
+            {/* 3. ANALYSIS RESULTS (if available) */}
+            {analysisResult && (
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                  <Brain className="h-5 w-5 mr-2 text-purple-600" />
+                  AI Analysis
+                </h3>
+                
+                <div className="space-y-4">
+                  {analysisResult.analysis && (
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-700 mb-2">Analysis</h4>
+                      <p className="text-sm text-gray-600">{analysisResult.analysis}</p>
+                    </div>
+                  )}
+                  
+                  {analysisResult.key_insights && (
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-700 mb-2">Key Insights</h4>
+                      <p className="text-sm text-gray-600">{analysisResult.key_insights}</p>
+                    </div>
+                  )}
+                  
+                  {analysisResult.recommendations && (
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-700 mb-2">Recommendations</h4>
+                      <p className="text-sm text-gray-600">{analysisResult.recommendations}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 4. EXTRACTED CRITERIA */}
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                 <CheckCircle className="h-5 w-5 mr-2 text-green-600" />
-                Here's What We're Looking For
+                Search Criteria
               </h3>
               
               <div className="space-y-3">
@@ -596,11 +606,11 @@ const SearchResultsPage = () => {
                   </div>
                 </div>
                 
-                {/* AI/ML Expertise */}
+                {/* Expertise */}
                 <div className="flex items-start">
                   <Brain className="h-4 w-4 text-gray-400 mt-0.5 mr-3 flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-gray-700">AI/ML Expertise</p>
+                    <p className="text-sm font-medium text-gray-700">Expertise</p>
                     <p className="text-sm text-gray-600">{searchCriteria.expertise}</p>
                   </div>
                 </div>
@@ -635,8 +645,8 @@ const SearchResultsPage = () => {
               
               <div className="mt-4 pt-4 border-t border-gray-200">
                 <p className="text-xs text-gray-500">
-                  <span className="font-medium">Note:</span> These criteria are automatically extracted from your search. 
-                  Refine your search above to update these requirements.
+                  <span className="font-medium">Note:</span> These criteria are based on your search query and job requirements. 
+                  Use the refinement panel above to adjust the search focus.
                 </p>
               </div>
             </div>
