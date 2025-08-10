@@ -183,7 +183,12 @@ Once the backend is running, visit:
 - `POST /chat` - Interactive CV analysis
 - `GET /chat/weights/{job_id}` - Preview aspect weights
 
-## 🤝 Contributing
+## 🤝 Contribiters And Contributing
+Đại Nguyễn Bá (Me)
+Tayyab Nisar (https://github.com/Tayyab666-star) Emaill(tnasir536@gmail.com)
+Jennifer Long (jl115@wellesley.edu)
+Damian Dumitru Lache (dashlache22@gmail.com)
+
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
