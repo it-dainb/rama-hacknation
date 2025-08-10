@@ -6,7 +6,7 @@ authors = [
     {name = "it-dainb",email = "it.dainb@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "dspy (>=2.6.27,<3.0.0)",
     "fastapi (>=0.116.1,<0.117.0)",
